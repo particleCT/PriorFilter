@@ -11,7 +11,12 @@
 #include "TH2D.h"
 #include "TH3D.h"
 #include "TGraph2D.h"
+#include "TMath.h"
+#include "TH3D.h"
+#include "TF1.h"
+#include "TProfile3D.h"
 #include "TProfile2D.h"
+#include "TObjString.h"
 #include "TBrowser.h"
 #include "TRandom.h"
 #include <iostream>
@@ -27,15 +32,16 @@ struct Particle{
   Int_t   Id;
   Float_t WET_prob, Y_prob, Z_prob;
   Float_t angle;
+  Float_t WET_est, Y_est, Z_est;
 };
 
 std::string* part_name;
-double EstimateEstop(Particle*, TH3D*, TMatrixD&, TMatrixD&, TMatrixD&, TMatrixD&);
-double EnergyStraggling(TMatrixD, double);
+double EstimateWET(Particle*, TH3D*, TMatrixD&, TMatrixD&, TMatrixD&, TMatrixD&, int);
+double EnergyStraggling(TMatrixD, double, int);
 
 
 double simps(TMatrixD , TMatrixD );
-double E2beta(double );
+double E2beta(double, int);
 vector<double> Energy;
 vector<double> dEdXBins;
 
@@ -45,6 +51,7 @@ void simps_mult(TMatrixD, TMatrixD, double, double &, double &, double &);
 double Gauss(double, double, double);
 double Gauss2D(TMatrixD, TMatrixD, TMatrixD);
 TMatrixD Mult(TMatrixD, TMatrixD);
+TMatrixD Mult_M(TMatrixD, TMatrixD);
 TMatrixD Mult(TMatrixD, double );
 
 int NStep = 500;
@@ -55,12 +62,12 @@ double det_Zmax =  8.76/2; // cm
 double det_Ymin = -35.2/2; // cm
 double det_Ymax =  35.2/2; // cm
 
-double reco_Xmin = -24.00/2.; // cm
-double reco_Xmax =  24.00/2.; // cm
-double reco_Ymin = -24.00/2.; // cm
-double reco_Ymax =  24.00/2.; // cm
-double reco_Zmin = -9.00/2.; // cm
-double reco_Zmax =  9.00/2.; // cm
+double reco_Xmin = -23.00/2.; // cm
+double reco_Xmax =  23.00/2.; // cm
+double reco_Ymin = -23.00/2.; // cm
+double reco_Ymax =  23.00/2.; // cm
+double reco_Zmin = -10/2.; // cm
+double reco_Zmax =  10/2.; // cm
 
 
 double midX = (det_Xmax+det_Xmin)/2.; // cm
@@ -69,27 +76,37 @@ double midZ = (det_Zmax+det_Zmin)/2.; // cm
 
 int main(int argc, char** argv){
 
-  if(argc<=2) {
-    cout<<"Please input the following arguments : Prior-File  Projection-File "<<endl;
-    return 0;
+  if(argc<=3) {
+  cout<<"Please input the following arguments : Prior-File  Projection-File Ion-type "<<endl;
+  return 0;
   }
-
+  string ion = argv[3];
+  if(ion.compare("H") !=0 and ion!="He"){
+  cout<<"Invalid ion species only 'H' or 'He' are valid"<<endl;
+  cout<<ion<<endl;
+  return 0;
+  }
+  int A = 0;
+  if(ion=="H") A=1;
+  if(ion=="He") A=4;
+  cout<<A<<endl;
   Particle Point;
   //--------------------------------------
-  // Load Phantom data
-  char* phantomFileName = Form("%s",argv[1]);
+  //Load Phantom data
+  char* phantomFileName = Form("%s",argv[2]);
   TFile* phantomFile = new TFile(phantomFileName,"update");
   char* histName = Form("RSP");
-  TH3D* RSPMap = (TH3D*)phantomFile->Get(histName);
+  //TProfile3D* RSPMap = (TProfile3D*)phantomFile->Get(histName); 
+ TH3D* RSPMap = (TH3D*)phantomFile->Get(histName);
 
   //--------------------------------------
   // Load Particle data  
-  char * phaseFilename = argv[2];
+  char * phaseFilename = argv[1];
   TFile* f = new TFile(phaseFilename,"update");
-  TTree* t = (TTree*)f->Get("phase");
-
+  TString* phaseFileName = new TString(argv[2]); 
   // get the data
-  t->SetBranchAddress("x0",&Point.x0);
+  TTree* t = (TTree*)f->Get("phase");
+  t->SetBranchAddress("x0",&Point.x0);  
   t->SetBranchAddress("y0",&Point.y0);
   t->SetBranchAddress("z0",&Point.z0);
 
@@ -105,23 +122,49 @@ int main(int argc, char** argv){
   t->SetBranchAddress("py1",&Point.py1);
   t->SetBranchAddress("pz1",&Point.pz1);
 
-  t->SetBranchAddress("angle",&Point.angle);
+  //t->SetBranchAddress("theta",&Point.angle);
   t->SetBranchAddress("wepl",&Point.wepl);
   t->GetEntry(0);
+
+  TObjArray *x = phaseFileName->Tokenize("_");
+  TObjString* ang_s = (TObjString*)x->At(x->GetLast());
+    cout<<ang_s->String()<<endl;
+
+  float ang = atof(ang_s->String());
+   // cout<<argv[1]<<" "<<ang<<endl;
+  Point.angle=ang;
   TBranch* bpt_WET  = t->Branch("WET_prob",&Point.WET_prob,"WET_prob/F");
   TBranch* bpt_Y    = t->Branch("Y_prob",&Point.Y_prob,"Y_prob/F");
   TBranch* bpt_Z    = t->Branch("Z_prob",&Point.Z_prob,"Z_prob/F");
 
-  std::string line;
-  std::ifstream SPWater ("dEdX/Water_Geant4.dat");
 
-  double data[3];
-  while(getline(SPWater, line)) {
-    stringstream ss(line);
-    for(int i=0;i<3;i++) ss >> data[i];
-    Energy.push_back(data[0]);
-    dEdXBins.push_back(data[1]);
+  TBranch* WET_est_b  = t->Branch("WET_est",&Point.WET_est,"WET_est/F");
+  TBranch* Y_est_b    = t->Branch("Y_est",&Point.Y_est,"Y_est/F");
+  TBranch* Z_est_b    = t->Branch("Z_est",&Point.Z_est,"Z_est/F");
+
+  std::string line;
+  if(A == 1){
+    std::ifstream SPWater ("dEdX/Water_Geant4.dat");
+    double data[3];
+    while(getline(SPWater, line)) {
+      stringstream ss(line);
+      for(int i=0;i<3;i++) ss >> data[i];
+        Energy.push_back(data[0]);
+        dEdXBins.push_back(data[1]);
+    }
   }
+  if(A == 4){
+    std::ifstream SPWater ("dEdX/Water_Geant4_He.dat");
+    double data[3];
+    while(getline(SPWater, line)) {
+      stringstream ss(line);
+      for(int i=0;i<3;i++) ss >> data[i];
+        Energy.push_back(data[0]);
+        dEdXBins.push_back(data[1]);
+    }
+
+  }
+
    
   // Do the filters
   TMatrixD R0(2,2);
@@ -130,15 +173,15 @@ int main(int argc, char** argv){
   TMatrixD Y1(2,1);
   TMatrixD Z1(2,1);
   TMatrixD Sigma(2,2);
-  double sigma_t , sigma_theta , sigma_t_theta,sigma_E, var_E, var_WET, sigma_WET;
-
+  double var_t , var_theta , var_t_theta, sigma_t , sigma_theta , sigma_t_theta,sigma_E, var_E, var_WET, sigma_WET;
+  int excluded_WET = 0 ;
+  int excluded_Y = 0 ;
+  int excluded_Z = 0;    
   int NEntries = t->GetEntries();
-  for(int i=0;i< NEntries;i++){
-
+  for(int i= 0;i<NEntries;i++){
     t->GetEntry(i);
-
+    
     if(i%10000==0) cout<<i<<endl;
-
     TMatrixD vector_X(NStep,1); // position in cm
     TMatrixD vector_L(NStep,1); // radiation length in cm
     TMatrixD vector_pv(NStep,1); // inverse energy
@@ -150,31 +193,37 @@ int main(int argc, char** argv){
     p1.SetMag(1);
     
     // Calculated the position expected value all in cm
-    R0(0,0)  = 1        ; R0(0,1)  = (Point.x1 - Point.x0)/10;
-    R0(1,0)  = 0        ; R0(1,1)  = 1;      
+    R0(0,0)  = 1           ; R0(0,1)  = (Point.x1 - Point.x0)/10;
+    R0(1,0)  = 0           ; R0(1,1)  = 1;      
     Y0(0,0)  = Point.y0/10 ; Y0(1,0)   = p0.y() ;
     Z0(0,0)  = Point.z0/10 ; Z0(1,0)   = p0.z() ; 
     Y1(0,0)  = Point.y1/10 ; Y1(1,0)   = p1.y() ; 
     Z1(0,0)  = Point.z1/10 ; Z1(1,0)   = p1.z() ;
 
     double WEPL_mes  = Point.wepl/10;
-    double Estop_mes = findEnergy(200,WEPL_mes);
-    double Estop_est = EstimateEstop(&Point, RSPMap, vector_L, vector_pv, vector_E, vector_X);
-    double WEPL_est  = findWET(200, Estop_est);
+    double Estop_mes = findEnergy(200*A,WEPL_mes);
+    double WEPL_est = EstimateWET(&Point, RSPMap, vector_L, vector_pv, vector_E, vector_X, A);
+    //double WEPL_est  = findWET(200.38*4, Estop_est);
 
-    // Calculate the standard deviation around the expected position
-
-    double Epsilon   = pow(13.6,2);      
+    // Calculate the standard deviation from the front tracker around the rear tracker expected position
+    double Epsilon;
+    if(A == 1) Epsilon   = pow(13.6,2);
+    if(A==4)  Epsilon   = pow(13.6*(0.5*A),2);      
     double E0s0      = Epsilon*pow(1+0.038* TMath::Log(simps(vector_X, Mult(vector_L, R0(0,1) ) ) ),2);
     TMatrixD y1      = Mult( vector_pv, vector_L);
     simps_mult(vector_X, y1, vector_X(NStep-1,0), sigma_t, sigma_t_theta, sigma_theta);
+    var_t       = E0s0*sigma_t;
+    var_theta   = E0s0*sigma_theta;
+    var_t_theta = E0s0*sigma_t_theta;
+    //cout<<var_t_theta<<endl;
 
-    sigma_t       = E0s0*sigma_t;
-    sigma_theta   = E0s0*sigma_theta;
-    sigma_t_theta = E0s0*sigma_t_theta;
 
-    // sttraging variance of energy -- This neglects scattering!
-    var_E         = EnergyStraggling(vector_E, Estop_mes); 
+    sigma_t       = TMath::Sqrt(var_t);
+    sigma_theta   = TMath::Sqrt(var_theta);
+    sigma_t_theta = TMath::Sqrt(var_t_theta);
+
+    // straggling variance of energy -- This neglects scattering!
+    var_E         = EnergyStraggling(vector_E, Estop_mes, A); 
     sigma_E       = TMath::Sqrt(var_E);
 
     // straggling variance of the WET
@@ -182,48 +231,81 @@ int main(int argc, char** argv){
     double SW_estop  = dEdXBins[it_Estop];
     var_WET      = var_E/pow(SW_estop,2);
     sigma_WET    = TMath::Sqrt(var_WET);
+    
+    //hard coded sigma for testing
+    //sigma_WET = 0.5;
+    //sigma_t = 0.1;
+
+    double det_var = 0.01;
+    // Minimal limit on the WET uncertainty -- this is detector
+    var_theta< det_var ? var_theta =det_var: var_theta = var_theta;
+
+    // Minimal limit on the WET uncertainty -- this is detector
+    var_t_theta< det_var ? var_t_theta =det_var: var_t_theta = var_t_theta;
+
+    det_var = 0.09;
+    // Minimal limit of det_sigma cm on the scattering uncertainty
+    var_t< det_var ? var_t  = det_var: var_t = var_t;
 
     // Scattering matrix
-    Sigma(0,0)    = sigma_t ;      Sigma(0,1) = sigma_t_theta;
-    Sigma(1,0)    = sigma_t_theta; Sigma(1,1) = sigma_theta;
+    Sigma(0,0)    = var_t ;      Sigma(0,1) = var_t_theta;
+    Sigma(1,0)    = var_t_theta; Sigma(1,1) = var_theta;
 
-    // Minimal limit of 0.5 cm on the WET uncertainty -- this is detector
-    sigma_WET< 0.5 ? sigma_WET =0.5: sigma_WET = sigma_WET;
+    double det_sigma = 0.3; //cm
+    // Minimal limit on the WET uncertainty -- this is detector
+    sigma_WET< det_sigma ? sigma_WET =det_sigma: sigma_WET = sigma_WET;
     
-    // Minimal limit of 0.5 cm on the scattering uncertainty
-    sigma_t< 0.5 ? sigma_t =0.5: sigma_t = sigma_t;
+    // Minimal limit of det_sigma cm on the scattering uncertainty
+    sigma_t< det_sigma ? sigma_t  = det_sigma: sigma_t = sigma_t;
+    
 
-    double Y_pred     = (R0*Y0)(0,0);
-    double Z_pred     = (R0*Z0)(0,0);
-    double gauss_Y    = Gauss(Y_pred, Y1(0,0), sigma_t);//Gauss2D(R0*Y0,Y1,Sigma); 
-    double gauss_Z    = Gauss(Z_pred, Z1(0,0), sigma_t);//Gauss2D(R0*Z0,Z1,Sigma); 
+    double Y_pred     = Mult_M(R0,Y0)(0,0);
+    double Z_pred     = Mult_M(R0,Z0)(0,0);
+    double gauss_Y    = /*Gauss(Y_pred, Y1(0,0), sigma_t);*/Gauss2D(Mult_M(R0,Y0),Y1,Sigma);  // 1-D for position, 2-D for position/direction
+    double gauss_Z    = /*Gauss(Z_pred, Z1(0,0), sigma_t);*/Gauss2D(Mult_M(R0,Z0),Z1,Sigma); 
     double gauss_WET  = Gauss(WEPL_mes, WEPL_est, sigma_WET);
-    
-    /*
-    if(WEPL_mes>0 && WEPL_mes<2){
-      cout<<" ------\nY0 "<<Y0(0,0)<<" -> "<<Y1(0,0)<<" Predicted :"<<(R0*Y0)(0,0)<<" PY0: "<<Y0(1,0)<<" PY1: "<<Y1(1,0)<<" Sigma_t: "<<sigma_t<<" Gauss_Y: "<<gauss_Y<<endl;
-      cout<<"Z0 "<<Z0(0,0)<<" -> "<<Z1(0,0)<<" Predicted :"<<(R0*Z0)(0,0)<<" PZ0: "<<Z0(1,0)<<" PZ1: "<<Z1(1,0)<<" Sigma_t: "<<sigma_t<<" Gauss_Z: "<<gauss_Z<<endl;
 
+    
+    if (gauss_WET<0.1) excluded_WET +=1;
+
+    if (gauss_Y<0.1) excluded_Y +=1;
+
+    if (gauss_Z<0.1) excluded_Z +=1;
+
+    if(WEPL_mes>0. && WEPL_mes<26. && i%1000 ==0){//&& Y1(0,0)>8.6 && Y1(0,0)<9.2 && Z1(0,0)>-3 && Z1(0,0)<-1.8 ){ // On the nose
+      cout<<"-----\nProton Number: "<<i<<endl;
+      cout<<"Y0 "<<Y0(0,0)<<" -> "<<Y1(0,0)<<" Predicted :"<<(R0*Y0)(0,0)<<" PY0: "<<Y0(1,0)<<" PY1: "<<Y1(1,0)<<" Sigma_t: "<<sigma_t<<" Gauss_Y: "<<gauss_Y<<endl;
+      cout<<"Z0 "<<Z0(0,0)<<" -> "<<Z1(0,0)<<" Predicted :"<<(R0*Z0)(0,0)<<" PZ0: "<<Z0(1,0)<<" PZ1: "<<Z1(1,0)<<" Sigma_t: "<<sigma_t<<" Gauss_Z: "<<gauss_Z<<endl;
       cout<<"P0 "<<p0.x()<<" "<<p0.y()<<" "<<p0.z()<<endl;
       cout<<"P1 "<<p1.x()<<" "<<p1.y()<<" "<<p1.z()<<endl;
-      cout<<"Estop Est "<<Estop_est<<" Estop Mes: "<<Estop_mes<<" sigma_E: "<<sigma_E<<endl;
+      //cout<<"Estop Est "<<Estop_est<<" Estop Mes: "<<Estop_mes<<" sigma_E: "<<sigma_E<<endl;
       cout<<"WEPL Est "<<WEPL_est<<" WEPL Meas "<<WEPL_mes<<" sigma_WET: "<<sigma_WET<<endl;
       cout<<"Prob Gauss: "<<gauss_Y<<" "<<gauss_Z<<" "<<gauss_WET<<endl;
       }
-    */
+    //cout<< "WET: " << excluded_WET<< "Y: " <<excluded_Y << "Z: " <<excluded_Z<<endl;
+
     Point.WET_prob = gauss_WET;
     Point.Y_prob = gauss_Y;
     Point.Z_prob = gauss_Z;      
     bpt_WET->Fill();
     bpt_Y->Fill();
     bpt_Z->Fill();
+
+
+    Point.WET_est = WEPL_est*10;
+    Point.Y_est = Y_pred*10;
+    Point.Z_est = Z_pred*10; 
+
+    WET_est_b->Fill();
+    Y_est_b->Fill();
+    Z_est_b->Fill();     
+
   }
 
   t->Write("",TObject::kOverwrite);
   f->Close();
   
 }
-
 ////////////////////////////////////////////
 // Extract WET
 ////////////////////////////////////////////
@@ -250,53 +332,56 @@ double findEnergy(double Einit,double WET){
   return Estop;
 }
 
+
 ////////////////////////////////////////////
-// Compute Spline and Estimate Estop
+// Compute Spline and Estimate WET
 ////////////////////////////////////////////
-double EstimateEstop(Particle *Point, TH3D* RSPMap, TMatrixD& vector_L, TMatrixD& vector_pv, TMatrixD& vector_E, TMatrixD& vector_X){
-  TVector3 p0(Point->px0,Point->py0,Point->pz0);
-  TVector3 p1(Point->px1,Point->py1,Point->pz1);
+double EstimateWET(Particle *Point, TH3D* RSPMap, TMatrixD& vector_L, TMatrixD& vector_pv, TMatrixD& vector_E, TMatrixD& vector_X, int A_n){
+  TVector3 p0(Point->px0,   Point->py0,   Point->pz0);
+  TVector3 p1(Point->px1,   Point->py1,   Point->pz1);
   TVector3 m0(Point->x0/10, Point->y0/10, Point->z0/10); // mm -> cm
   TVector3 m1(Point->x1/10, Point->y1/10, Point->z1/10); // mm -> cm
-
+  
   TVector3 m, m_entry, m_exit, m_old; // position of the path at the entry and exit
   double t, t_entry = 0., t_exit = 1.; // fraction of the path at which point the spline enter the Hull
+  TVector3 origin(0,0,0); // cm
 
+  m0 -= origin; m1 -= origin;  
   // Negative rotation because we change the coordinates and not the phantom
-  m0.RotateZ(-1*Point->angle*M_PI/180.);
-  m1.RotateZ(-1*Point->angle*M_PI/180.);
-  p0.RotateZ(-1*Point->angle*M_PI/180.);
-  p1.RotateZ(-1*Point->angle*M_PI/180.);
+  m0.RotateZ(-1*(Point->angle)*M_PI/180.);
+  m1.RotateZ(-1*(Point->angle)*M_PI/180.);
+  p0.RotateZ(-1*(Point->angle)*M_PI/180.);
+  p1.RotateZ(-1*(Point->angle)*M_PI/180.);
+  //m0 += origin; m1 += origin;
   m_entry = m0;
   m_exit  = m1;
-  
-  //Problem from cubic root histogram and rotation here: rotating the object might leave the starting position out of the object. 
-  //Hence the m0 must initially be forwared onto the reconstruction zylinder. 
-  //The code assumes the center of the coordiante system lies in the center of the reconstructed volume
-  //the reconstructed volume has a radius of radius_r = 12cm for the head, 9cm for Catphans
-  double recon_radius = 15; //cm 15 for head, 9 for Catphan
- 
-  
-  // Propagate from the entrance to the Hull
+  double RSP    = 0.0;  
+  double recon_radius = 11;
+  p0.SetMag(TVector3(m1-m0).Mag()); 
+  p1.SetMag(TVector3(m1-m0).Mag());
+
+  //Propagate from the entrance to the Hull
   for(int k =1; k<NStep-1; k++){
     t_entry = double(k)/NStep;
     m_entry = m0 + t_entry*p0;
-    if (sqrt(pow(m_entry.x(),2)+pow(m_entry.y(),2))<recon_radius){ //Only now we are in the area covered by the reconstruction, nothing outside this radius
-      int global = RSPMap->FindBin(m_entry.x(),m_entry.y(),m_entry.z());
+    if (sqrt(pow(m_entry.x(),2)+pow(m_entry.y(),2))<recon_radius){
+      int global = RSPMap->FindBin((m_entry.x()*10), (m_entry.y()*10),(m_entry.z()*10));
       double RSP = RSPMap->GetBinContent(global);
-      if(RSP>0.4) break;
     }
+    else RSP = 0.001;
+    if(RSP>0.2) break;
   }
 
   // Retro Propagate from the exit to the Hull
   for(int k =NStep-1; k>=1; k--){
     t_exit = double(k)/NStep;
-    m_exit = m1 - t_exit*p1;
+    m_exit = m1 - (1-t_exit)*p1;
     if (sqrt(pow(m_exit.x(),2)+pow(m_exit.y(),2))<recon_radius){ //same as above
-      int global = RSPMap->FindBin(m_exit.x(),m_exit.y(),m_exit.z());
+      int global = RSPMap->FindBin(m_exit.x()*10,m_exit.y()*10,m_exit.z()*10);
       double RSP = RSPMap->GetBinContent(global);
-      if(RSP>0.4) break;
     }
+    else RSP = 0.001;
+    if(RSP>0.2) break;
   }
 
   if(t_entry > t_exit) { // No Hull we are in air
@@ -305,16 +390,16 @@ double EstimateEstop(Particle *Point, TH3D* RSPMap, TMatrixD& vector_L, TMatrixD
     t_entry = 0.;
     t_exit = 1.;
   }
-
-  double WER    = 25.693404; // 200 MeV -- cm
+  //cout<<m_entry.x()<<" "<<m_exit.x()<<" "<<t_entry<<" "<<t_exit<<endl;
+  double WER    = 26; // 200 MeV -- cm
   double wepl   = Point->wepl/10; // mm -> cm
   double alpha1 = 1.01+0.43*pow(wepl/WER,2);
   double alpha2 = 0.99-0.46*pow(wepl/WER,2);
   double TotLength  = TVector3(m1-m0).Mag();
   double HullLength = TVector3(m_exit-m_entry).Mag(); 
 
-  double RSP    = 0.0;
-  double Einit  = 200;  
+  double Einit  = 200.*A_n;  
+  double WET = 0;
   p0.SetMag(alpha1*HullLength);
   p1.SetMag(alpha2*HullLength);
   TVector3 A,B,C,D;
@@ -323,36 +408,48 @@ double EstimateEstop(Particle *Point, TH3D* RSPMap, TMatrixD& vector_L, TMatrixD
   C       =    p0;
   D       =    m_entry;
   m_old   =    m0;
+
+  p0.SetMag(TVector3(m1-m0).Mag()); 
+  p1.SetMag(TVector3(m1-m0).Mag());
   for(int i=0;i<NStep;i++){
     
     t = double(i)/NStep;
     // before the Hull -- straight line
-    if(t < t_entry) m = m0 + t*(m_entry-m0);
+    if(t < t_entry){ m = m0 + t*p0;
+       vector_L(i,0) = 1./3.5E4; // cm
+       RSP=0.001;}
     
     // after the Hull -- straight line
-    else if (t > t_exit) m = m_exit+ t*(m1-m_exit);
+    else if (t > t_exit){ m = m_exit + ((t-t_exit)*p1);
+
+            vector_L(i,0) = 1./3.5E4; // cm
+            RSP=0.001;}
 
     // in the Hull -- cubic spline
-    else m = D+t*(C+t*(B+t*A));
-
+    else{ 
+    double u=(t-t_entry)/(t_exit-t_entry);
+    m = D+u*(C+u*(B+u*A));
     // verifiy where we are in the prior reconstruction 
     if(m.x() < reco_Xmin || m.x() > reco_Xmax) RSP = 0.001; //RSP outside recon object not zero
     else if(m.y() < reco_Ymin || m.y() > reco_Ymax) RSP = 0.001;
     else if(m.z() < reco_Zmin || m.z() > reco_Zmax) RSP = 0.001;
     else{
-      int binID  = RSPMap->FindBin(m.x(), m.y(), m.z()); 
-      RSP = RSPMap->GetBinContent(binID);
-    }      
+      //if (sqrt(pow(m.x(),2)+pow(m.y(),2))<recon_radius) RSP = 1.0;
+      //else RSP = 0.0;
+     int binID  = RSPMap->FindBin(m.x()*10, m.y()*10, m.z()*10); 
+     RSP = RSPMap->GetBinContent(binID);
+     vector_L(i,0) = 1./(36.1); // cm
 
-    float L    = TVector3(m-m_old).Mag();   
-
+    }}  
+    float L    = TVector3(m-m_old).Mag(); 
+    
     // fill the vectors to later calculate the sigmas
-    if(RSP<0.4){ 
-	vector_L(i,0) = 1./3.5E4; // cm
-	RSP = 0.001;
-    }
-    else vector_L(i,0) = 1./(36.1); // cm
-    vector_pv(i,0) = pow( (Einit+938.27)/((Einit + 1876.54)*Einit), 2);
+
+    float m_rest;
+    if (A_n==1) m_rest = 938.27;
+    if(A_n==4) m_rest = 3727.379;
+
+    vector_pv(i,0) = pow( (Einit+m_rest)/((Einit + (2*m_rest))*Einit), 2);
     vector_E(i,0)  = Einit;    
 
     // to work with the rotation
@@ -360,12 +457,15 @@ double EstimateEstop(Particle *Point, TH3D* RSPMap, TMatrixD& vector_L, TMatrixD
 
     // keep a record of the exit energy
     int idE    = lower_bound(Energy.begin(), Energy.end(), Einit)-Energy.begin();
-    Einit     -= (L)*RSP*dEdXBins[idE]*10;
+    Einit     -= (L*10)*RSP*dEdXBins[idE];
     m_old      = m;
-  }
+  
+    WET += (L)*RSP;
+    }
 
-  return Einit;
+  return WET;
 }
+
 ////////////////////////////////////////////
 // Simpson rule of integration for the three sigma of y  along the x axis
 ////////////////////////////////////////////
@@ -410,6 +510,24 @@ TMatrixD Mult(TMatrixD A, TMatrixD B){
   for(int i=0;i<nrows ;i++){
     for(int j=0;j<ncols;j++){
       result(i,j) = A(i,j)*B(i,j);
+    }
+  }
+  return result;
+}
+////////////////////////////////////////////
+// element-wise multiplication of matrix
+////////////////////////////////////////////
+TMatrixD Mult_M(TMatrixD A, TMatrixD B){
+  int Anrows  = A.GetNrows();
+  int Ancols = A.GetNcols();
+  int Bnrows  = B.GetNrows();
+  int Bncols = B.GetNcols();
+  TMatrixD result(Anrows,Bncols);
+  for(int i=0;i<Anrows ;i++){
+    for(int j=0;j<Bncols;j++){
+        for(int k=0; k< Ancols;k++){
+      result(i,j) += A(i,k)*B(k,j);
+     }
     }
   }
   return result;
@@ -461,7 +579,7 @@ double simps(TMatrixD x, TMatrixD y){
 ////////////////////////////////////////////
 // Energy straggling --> return the variance
 ////////////////////////////////////////////
-double EnergyStraggling(TMatrixD tracks_E, double Eout){
+double EnergyStraggling(TMatrixD tracks_E, double Eout, int A){
   double strag = 0.;
   double K1     = 170./1000; // keV/cm -> MeV->cm
   double K2     = 0.082;//MeV2/cm
@@ -472,22 +590,27 @@ double EnergyStraggling(TMatrixD tracks_E, double Eout){
   double water_I = 78E-6;
   for(int idx=1;idx<NStep;idx++){
     dT     = abs(tracks_E(idx,0)- tracks_E(idx-1,0));
-    beta2  = E2beta(tracks_E(idx,0));// beta2
+    beta2  = E2beta(tracks_E(idx,0),A);// beta2
     chi1   = (K1/beta2)*(log(2*mec2*beta2/((75E-6)*(1-beta2))) - beta2);
     chi2   = rho_e*K2*(1-0.5*beta2)/(1-beta2); // Tschalar
     strag += dT*chi2/(pow(chi1,3));
   }
   //Eout
-  beta2    = E2beta(Eout);
+  beta2    = E2beta(Eout, A);
   chi1     = (K1/beta2)*(log(2*mec2*beta2/((water_I)*(1-beta2))) - beta2);
   strag    = pow(chi1,2)*strag;
   return strag;
+
 }
 ////////////////////////////////////////////
 // Velocity divided by light velocity
 ////////////////////////////////////////////
-double E2beta(double E){
-  double mc2   = 938.27; // relativistic mass for protons
+double E2beta(double E, int A){
+  
+  double mc2;
+  if(A==1) mc2   = 938.27; // relativistic mass for protons
+  if(A==4) mc2   = 3727.379;
+
   double tau   = E/mc2;
   return (tau+2)*tau/pow(tau+1,2);
 
@@ -504,15 +627,15 @@ double Gauss(double x, double x0, double sigma){
 // Bi-variate normal distribution
 ////////////////////////////////////////////
 double Gauss2D(TMatrixD Y0, TMatrixD Y1, TMatrixD Sigma){
+  double Sigma_det=Sigma.Determinant();
   TMatrixD Sigma_I = Sigma.Invert();
   TMatrixD Diff  = Y1 - Y0;
   TMatrixD Diff_t(TMatrixD::kTransposed,Diff);  
-  TMatrixD Part1 = Sigma_I*Diff;
-  TMatrixD num   = (Diff_t*Part1);
-  //double den     = (2*TMath::Pi())*TMath::Sqrt(Sigma.Determinant());
+  TMatrixD Part1 = Mult_M(Sigma_I,Diff);
+  TMatrixD num   = Mult_M(Diff_t,Part1);
+  //cout<<Sigma.Determinant()<<endl;
+  //double den     = (2*TMath::Pi())*TMath::Sqrt(Sigma_det);
   return TMath::Exp(-0.5*num(0,0));///den;
 
 }
-
-
 

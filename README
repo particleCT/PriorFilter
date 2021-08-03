@@ -1,0 +1,22 @@
+Prior Filter
+
+Particle CT filter using a prior reconstruction to determine the likelihood of a particle's path occuring from only electromagnetic interactions
+
+Compile by running source compile.sh
+
+Prerequesite:
+- Geant4
+- ROOT
+
+## Main Code 
+An example command to run is
+
+```shell script
+./bin/PriorFilter projection_file prior_file ion
+```
+
+The variables respectively mean:
+
+-projection_file : ROOT file containing the single-tracking particle acquisitoin with the full output (x0,x1, y0, y1, z0, z1, px0, px1, py0, py1, pz0, pz1, wepl)
+-prior_file   : ROOT file containing the prior reconstruction for determineing the energy loss through the object. Looks for TH3D called 'RSP'
+-ion    : Ion species used for imaging this dataset. Currently implemented H and He
